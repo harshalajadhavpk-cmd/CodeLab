@@ -1,0 +1,615 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>GTA-Style City Prototype + Sound & Music</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; font-family: Arial, sans-serif; }
+    body { overflow: hidden; background: #090d16; color: #fff; }
+    canvas { display: block; width: 100vw; height: 100vh; }
+
+    #hud {
+      position: fixed; top: 16px; right: 16px;
+      background: rgba(10, 15, 28, 0.82);
+      border: 1px solid rgba(0, 238, 255, 0.35);
+      border-radius: 10px; padding: 14px 18px;
+      min-width: 220px; z-index: 10;
+    }
+    #hud h3 { color: #00eaff; margin-bottom: 8px; font-size: 15px; letter-spacing: 1px; }
+    .hud-row { margin: 6px 0; font-size: 14px; }
+    .stars { color: #ffd000; font-weight: bold; letter-spacing: 2px; }
+    .cash { color: #22ff88; font-weight: bold; }
+
+    #crosshair {
+      position: fixed; top: 50%; left: 50%;
+      transform: translate(-50%, -50%);
+      color: #00eaff; font-size: 24px; font-weight: bold;
+      pointer-events: none; z-index: 10; text-shadow: 0 0 8px #000;
+    }
+
+    #msg {
+      position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%);
+      background: rgba(10, 15, 28, 0.88);
+      border: 1px solid rgba(255, 255, 255, 0.18);
+      border-radius: 8px; padding: 10px 18px;
+      font-size: 13px; text-align: center; z-index: 10; max-width: 92vw;
+    }
+
+    #overlay {
+      position: fixed; inset: 0;
+      background: rgba(5, 8, 16, 0.88);
+      display: flex; flex-direction: column; align-items: center; justify-content: center;
+      z-index: 20; gap: 14px; text-align: center; padding: 20px;
+    }
+    #overlay h1 { font-size: 36px; color: #00eaff; text-shadow: 0 0 18px rgba(0,238,255,0.5); }
+    #overlay p { color: #cbd5e1; max-width: 520px; line-height: 1.5; font-size: 14px; }
+    #startBtn {
+      margin-top: 8px; padding: 12px 28px; font-size: 16px; font-weight: bold;
+      border: none; border-radius: 8px; background: #00eaff; color: #050810;
+      cursor: pointer;
+    }
+    #startBtn:hover { background: #5cf5ff; }
+  </style>
+</head>
+<body>
+  <div id="overlay">
+    <h1>VICE CITY PROTOTYPE</h1>
+    <p>
+      <b>WASD / Arrows:</b> Move or Drive &nbsp;|&nbsp; <b>Shift:</b> Sprint &nbsp;|&nbsp;
+      <b>F:</b> Enter / Exit Car &nbsp;|&nbsp; <b>Left Click:</b> Shoot &nbsp;|&nbsp; <b>M:</b> Mute / Unmute Audio
+    </p>
+    <button id="startBtn">START GAME + AUDIO</button>
+  </div>
+
+  <div id="hud">
+    <h3>CITY HUD</h3>
+    <div class="hud-row">WANTED: <span id="wanted" class="stars">☆☆☆☆☆</span></div>
+    <div class="hud-row">CASH: <span id="cash" class="cash">$1,000</span></div>
+    <div class="hud-row">MODE: <span id="mode">ON FOOT</span></div>
+    <div class="hud-row">AUDIO: <span id="audioState">ON</span></div>
+  </div>
+
+  <div id="crosshair">+</div>
+  <div id="msg">Click START GAME to enable sound & controls.</div>
+  <canvas id="game"></canvas>
+
+  <script>
+    const canvas = document.getElementById("game");
+    const ctx = canvas.getContext("2d");
+
+    function resize() {
+      canvas.width = window.innerWidth;
+      canvas.height = window.innerHeight;
+    }
+    window.addEventListener("resize", resize);
+    resize();
+
+    // ==================== SOUND & MUSIC ENGINE (Web Audio API) ====================
+    class SoundEngine {
+      constructor() {
+        this.ctx = null;
+        this.muted = false;
+        this.musicTimer = null;
+        this.stepIndex = 0;
+        this.engineOsc = null;
+        this.engineGain = null;
+      }
+
+      init() {
+        if (!this.ctx) {
+          const AudioCtx = window.AudioContext || window.webkitAudioContext;
+          this.ctx = new AudioCtx();
+          this.setupEngineSound();
+          this.startSynthMusic();
+        }
+        if (this.ctx.state === "suspended") {
+          this.ctx.resume();
+        }
+      }
+
+      toggleMute() {
+        this.muted = !this.muted;
+        if (this.engineGain && this.ctx) {
+          this.engineGain.gain.setTargetAtTime(0, this.ctx.currentTime, 0.05);
+        }
+        document.getElementById("audioState").textContent = this.muted ? "MUTED" : "ON";
+      }
+
+      setupEngineSound() {
+        this.engineOsc = this.ctx.createOscillator();
+        this.engineGain = this.ctx.createGain();
+        this.engineOsc.type = "sawtooth";
+        this.engineOsc.frequency.value = 55;
+        this.engineGain.gain.value = 0;
+        this.engineOsc.connect(this.engineGain);
+        this.engineGain.connect(this.ctx.destination);
+        this.engineOsc.start();
+      }
+
+      updateEngine(active, speedRatio) {
+        if (!this.ctx || !this.engineOsc || !this.engineGain) return;
+        const now = this.ctx.currentTime;
+        if (this.muted || !active) {
+          this.engineGain.gain.setTargetAtTime(0, now, 0.08);
+          return;
+        }
+        const freq = 52 + Math.abs(speedRatio) * 95;
+        const vol = 0.025 + Math.abs(speedRatio) * 0.04;
+        this.engineOsc.frequency.setTargetAtTime(freq, now, 0.06);
+        this.engineGain.gain.setTargetAtTime(vol, now, 0.06);
+      }
+
+      startSynthMusic() {
+        // Synthwave / Vice City style bass & lead loop
+        const bassNotes = [65.41, 65.41, 77.78, 87.31, 98.00, 87.31, 77.78, 58.27];
+        const leadNotes = [261.63, 0, 311.13, 349.23, 392.00, 349.23, 311.13, 293.66];
+
+        this.musicTimer = setInterval(() => {
+          if (!this.ctx || this.muted || this.ctx.state !== "running") return;
+          const now = this.ctx.currentTime;
+          const bFreq = bassNotes[this.stepIndex % bassNotes.length];
+          const lFreq = leadNotes[this.stepIndex % leadNotes.length];
+
+          // Bass pulse
+          const bOsc = this.ctx.createOscillator();
+          const bGain = this.ctx.createGain();
+          bOsc.type = "triangle";
+          bOsc.frequency.setValueAtTime(bFreq, now);
+          bGain.gain.setValueAtTime(0.05, now);
+          bGain.gain.exponentialRampToValueAtTime(0.001, now + 0.22);
+          bOsc.connect(bGain);
+          bGain.connect(this.ctx.destination);
+          bOsc.start(now);
+          bOsc.stop(now + 0.23);
+
+          // Lead arp
+          if (lFreq > 0) {
+            const lOsc = this.ctx.createOscillator();
+            const lGain = this.ctx.createGain();
+            lOsc.type = "sine";
+            lOsc.frequency.setValueAtTime(lFreq, now);
+            lGain.gain.setValueAtTime(0.025, now);
+            lGain.gain.exponentialRampToValueAtTime(0.001, now + 0.2);
+            lOsc.connect(lGain);
+            lGain.connect(this.ctx.destination);
+            lOsc.start(now);
+            lOsc.stop(now + 0.21);
+          }
+
+          this.stepIndex++;
+        }, 240);
+      }
+
+      playShoot() {
+        if (!this.ctx || this.muted) return;
+        const now = this.ctx.currentTime;
+
+        // Noise burst for gunshot
+        const bufferSize = this.ctx.sampleRate * 0.12;
+        const buffer = this.ctx.createBuffer(1, bufferSize, this.ctx.sampleRate);
+        const data = buffer.getChannelData(0);
+        for (let i = 0; i < bufferSize; i++) {
+          data[i] = (Math.random() * 2 - 1) * Math.exp(-i / (bufferSize * 0.35));
+        }
+        const noise = this.ctx.createBufferSource();
+        noise.buffer = buffer;
+
+        const filter = this.ctx.createBiquadFilter();
+        filter.type = "bandpass";
+        filter.frequency.setValueAtTime(900, now);
+
+        const gain = this.ctx.createGain();
+        gain.gain.setValueAtTime(0.18, now);
+        gain.gain.exponentialRampToValueAtTime(0.001, now + 0.12);
+
+        noise.connect(filter);
+        filter.connect(gain);
+        gain.connect(this.ctx.destination);
+        noise.start(now);
+      }
+
+      playDoor() {
+        if (!this.ctx || this.muted) return;
+        const now = this.ctx.currentTime;
+        const osc = this.ctx.createOscillator();
+        const gain = this.ctx.createGain();
+        osc.type = "square";
+        osc.frequency.setValueAtTime(190, now);
+        osc.frequency.exponentialRampToValueAtTime(85, now + 0.11);
+        gain.gain.setValueAtTime(0.07, now);
+        gain.gain.exponentialRampToValueAtTime(0.001, now + 0.12);
+        osc.connect(gain);
+        gain.connect(this.ctx.destination);
+        osc.start(now);
+        osc.stop(now + 0.12);
+      }
+
+      playHit() {
+        if (!this.ctx || this.muted) return;
+        const now = this.ctx.currentTime;
+        const osc = this.ctx.createOscillator();
+        const gain = this.ctx.createGain();
+        osc.type = "sine";
+        osc.frequency.setValueAtTime(520, now);
+        osc.frequency.exponentialRampToValueAtTime(140, now + 0.16);
+        gain.gain.setValueAtTime(0.12, now);
+        gain.gain.exponentialRampToValueAtTime(0.001, now + 0.17);
+        osc.connect(gain);
+        gain.connect(this.ctx.destination);
+        osc.start(now);
+        osc.stop(now + 0.17);
+      }
+
+      playWantedAlert() {
+        if (!this.ctx || this.muted) return;
+        const now = this.ctx.currentTime;
+        const osc = this.ctx.createOscillator();
+        const gain = this.ctx.createGain();
+        osc.type = "sawtooth";
+        osc.frequency.setValueAtTime(620, now);
+        osc.frequency.linearRampToValueAtTime(420, now + 0.18);
+        osc.frequency.linearRampToValueAtTime(620, now + 0.36);
+        gain.gain.setValueAtTime(0.07, now);
+        gain.gain.exponentialRampToValueAtTime(0.001, now + 0.4);
+        osc.connect(gain);
+        gain.connect(this.ctx.destination);
+        osc.start(now);
+        osc.stop(now + 0.41);
+      }
+    }
+
+    const sound = new SoundEngine();
+
+    // ==================== GAME WORLD & STATE ====================
+    const keys = {};
+    window.addEventListener("keydown", (e) => {
+      const code = e.code;
+      keys[code] = true;
+
+      if (code === "KeyM") {
+        sound.toggleMute();
+      }
+      if (code === "KeyF" && gameStarted) {
+        toggleCar();
+      }
+    });
+    window.addEventListener("keyup", (e) => {
+      keys[e.code] = false;
+    });
+
+    let gameStarted = false;
+    let inCar = false;
+    let cash = 1000;
+    let wanted = 0;
+    let wantedTimer = 0;
+    let aimAngle = 0;
+    let bullets = [];
+    let particles = [];
+
+    const player = { x: 80, y: 120, angle: 0, speed: 3.6, sprintSpeed: 6.2, radius: 14 };
+    const car = { x: 0, y: 140, angle: 0, speed: 0, maxSpeed: 9.5, width: 46, height: 24 };
+
+    // City Buildings
+    const buildings = [];
+    for (let gx = -900; gx <= 900; gx += 240) {
+      for (let gy = -900; gy <= 900; gy += 240) {
+        if (Math.abs(gx) < 130 && Math.abs(gy) < 130) continue;
+        buildings.push({
+          x: gx + 35,
+          y: gy + 35,
+          w: 150,
+          h: 150,
+          color: `hsl(${(Math.abs(gx + gy) * 19) % 360}, 25%, 22%)`
+        });
+      }
+    }
+
+    // Targets / Rival NPCs
+    let targets = [];
+    function spawnTargets(count = 12) {
+      targets = [];
+      for (let i = 0; i < count; i++) {
+        targets.push({
+          x: (Math.random() - 0.5) * 1200,
+          y: (Math.random() - 0.5) * 1200,
+          vx: (Math.random() - 0.5) * 2.2,
+          vy: (Math.random() - 0.5) * 2.2,
+          radius: 15,
+          alive: true
+        });
+      }
+    }
+    spawnTargets(14);
+
+    function setMessage(text) {
+      document.getElementById("msg").textContent = text;
+    }
+
+    function updateHUD() {
+      document.getElementById("wanted").textContent = "★".repeat(wanted) + "☆".repeat(5 - wanted);
+      document.getElementById("cash").textContent = "$" + cash.toLocaleString();
+      document.getElementById("mode").textContent = inCar ? "IN CAR" : "ON FOOT";
+    }
+
+    function toggleCar() {
+      const dist = Math.hypot(player.x - car.x, player.y - car.y);
+      if (!inCar) {
+        if (dist < 65) {
+          inCar = true;
+          car.speed = 0;
+          sound.playDoor();
+          setMessage("Entered Car! Drive with WASD / Arrows. Press F to exit.");
+        } else {
+          setMessage("Move closer to the red sports car and press F.");
+        }
+      } else {
+        inCar = false;
+        car.speed = 0;
+        player.x = car.x - Math.sin(car.angle) * 32;
+        player.y = car.y + Math.cos(car.angle) * 32;
+        sound.playDoor();
+        setMessage("Exited Car! Aim with mouse & Left Click to shoot.");
+      }
+      updateHUD();
+    }
+
+    canvas.addEventListener("mousemove", (e) => {
+      const rect = canvas.getBoundingClientRect();
+      const cx = rect.width / 2;
+      const cy = rect.height / 2;
+      aimAngle = Math.atan2(e.clientY - cy, e.clientX - cx);
+    });
+
+    canvas.addEventListener("mousedown", (e) => {
+      if (!gameStarted || inCar || e.button !== 0) return;
+      sound.playShoot();
+      bullets.push({
+        x: player.x + Math.cos(aimAngle) * 18,
+        y: player.y + Math.sin(aimAngle) * 18,
+        vx: Math.cos(aimAngle) * 18,
+        vy: Math.sin(aimAngle) * 18,
+        life: 55
+      });
+    });
+
+    document.getElementById("startBtn").addEventListener("click", () => {
+      sound.init();
+      gameStarted = true;
+      document.getElementById("overlay").style.display = "none";
+      setMessage("City loaded! WASD to move, F to enter car, Left Click to shoot.");
+      updateHUD();
+    });
+
+    function addWanted() {
+      wanted = Math.min(5, wanted + 1);
+      wantedTimer = 8;
+      sound.playWantedAlert();
+      updateHUD();
+    }
+
+    function update(dt) {
+      if (wanted > 0) {
+        wantedTimer -= dt;
+        if (wantedTimer <= 0) {
+          wanted = Math.max(0, wanted - 1);
+          wantedTimer = 8;
+          updateHUD();
+        }
+      }
+
+      const up = keys["KeyW"] || keys["ArrowUp"];
+      const down = keys["KeyS"] || keys["ArrowDown"];
+      const left = keys["KeyA"] || keys["ArrowLeft"];
+      const right = keys["KeyD"] || keys["ArrowRight"];
+      const sprint = keys["ShiftLeft"] || keys["ShiftRight"];
+
+      if (inCar) {
+        if (up) car.speed = Math.min(car.maxSpeed, car.speed + 0.28);
+        else if (down) car.speed = Math.max(-car.maxSpeed * 0.6, car.speed - 0.25);
+        else car.speed *= 0.95;
+
+        if (Math.abs(car.speed) > 0.2) {
+          const dir = car.speed >= 0 ? 1 : -1;
+          if (left) car.angle -= 0.045 * dir;
+          if (right) car.angle += 0.045 * dir;
+        }
+
+        car.x += Math.cos(car.angle) * car.speed;
+        car.y += Math.sin(car.angle) * car.speed;
+        player.x = car.x;
+        player.y = car.y;
+
+        sound.updateEngine(true, car.speed / car.maxSpeed);
+
+        // Hit targets with car
+        for (const t of targets) {
+          if (!t.alive) continue;
+          if (Math.hypot(car.x - t.x, car.y - t.y) < t.radius + 24 && Math.abs(car.speed) > 2.2) {
+            t.alive = false;
+            cash += 350;
+            sound.playHit();
+            addWanted();
+            spawnExplosion(t.x, t.y, "#ff9d00");
+            setMessage("Hit target with car! +$350 | Wanted: " + wanted + " Stars");
+          }
+        }
+      } else {
+        sound.updateEngine(false, 0);
+        let mx = 0, my = 0;
+        if (up) my -= 1;
+        if (down) my += 1;
+        if (left) mx -= 1;
+        if (right) mx += 1;
+
+        if (mx !== 0 || my !== 0) {
+          const len = Math.hypot(mx, my);
+          mx /= len; my /= len;
+          const spd = sprint ? player.sprintSpeed : player.speed;
+          player.x += mx * spd;
+          player.y += my * spd;
+          player.angle = Math.atan2(my, mx);
+        } else {
+          player.angle = aimAngle;
+        }
+      }
+
+      // Update bullets
+      for (let i = bullets.length - 1; i >= 0; i--) {
+        const b = bullets[i];
+        b.x += b.vx;
+        b.y += b.vy;
+        b.life--;
+
+        let hitSomething = false;
+        for (const t of targets) {
+          if (!t.alive) continue;
+          if (Math.hypot(b.x - t.x, b.y - t.y) < t.radius + 5) {
+            t.alive = false;
+            cash += 500;
+            sound.playHit();
+            addWanted();
+            spawnExplosion(t.x, t.y, "#00eaff");
+            setMessage("Target eliminated! +$500 | Wanted: " + wanted + " Stars");
+            hitSomething = true;
+            break;
+          }
+        }
+
+        if (hitSomething || b.life <= 0) {
+          bullets.splice(i, 1);
+        }
+      }
+
+      // Move targets
+      for (const t of targets) {
+        if (!t.alive) continue;
+        t.x += t.vx;
+        t.y += t.vy;
+        if (Math.abs(t.x) > 850) t.vx *= -1;
+        if (Math.abs(t.y) > 850) t.vy *= -1;
+      }
+
+      // Respawn if all targets cleared
+      if (targets.every(t => !t.alive)) {
+        spawnTargets(14);
+        setMessage("New targets spawned in the city!");
+      }
+
+      // Update particles
+      for (let i = particles.length - 1; i >= 0; i--) {
+        const p = particles[i];
+        p.x += p.vx;
+        p.y += p.vy;
+        p.alpha -= 0.03;
+        if (p.alpha <= 0) particles.splice(i, 1);
+      }
+    }
+
+    function spawnExplosion(x, y, color) {
+      for (let i = 0; i < 16; i++) {
+        const a = (Math.PI * 2 * i) / 16;
+        const sp = 1.5 + Math.random() * 3.5;
+        particles.push({ x, y, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp, alpha: 1, color });
+      }
+    }
+
+    function draw() {
+      ctx.fillStyle = "#141923";
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+      const camX = (inCar ? car.x : player.x) - canvas.width / 2;
+      const camY = (inCar ? car.y : player.y) - canvas.height / 2;
+
+      ctx.save();
+      ctx.translate(-camX, -camY);
+
+      // Road grid lines
+      ctx.strokeStyle = "rgba(255, 215, 0, 0.14)";
+      ctx.lineWidth = 2;
+      for (let g = -1000; g <= 1000; g += 120) {
+        ctx.beginPath();
+        ctx.moveTo(g, -1000);
+        ctx.lineTo(g, 1000);
+        ctx.stroke();
+
+        ctx.beginPath();
+        ctx.moveTo(-1000, g);
+        ctx.lineTo(1000, g);
+        ctx.stroke();
+      }
+
+      // Buildings
+      for (const b of buildings) {
+        ctx.fillStyle = b.color;
+        ctx.fillRect(b.x, b.y, b.w, b.h);
+        ctx.strokeStyle = "rgba(255,255,255,0.08)";
+        ctx.strokeRect(b.x, b.y, b.w, b.h);
+      }
+
+      // Car
+      ctx.save();
+      ctx.translate(car.x, car.y);
+      ctx.rotate(car.angle);
+      ctx.fillStyle = "#ef233c";
+      ctx.fillRect(-car.width / 2, -car.height / 2, car.width, car.height);
+      ctx.fillStyle = "#1d2d44";
+      ctx.fillRect(-6, -car.height / 2 + 3, 18, car.height - 6);
+      ctx.restore();
+
+      // Targets
+      for (const t of targets) {
+        if (!t.alive) continue;
+        ctx.fillStyle = "#ff9f1c";
+        ctx.beginPath();
+        ctx.arc(t.x, t.y, t.radius, 0, Math.PI * 2);
+        ctx.fill();
+      }
+
+      // Bullets
+      ctx.fillStyle = "#ffe600";
+      for (const b of bullets) {
+        ctx.beginPath();
+        ctx.arc(b.x, b.y, 4, 0, Math.PI * 2);
+        ctx.fill();
+      }
+
+      // Particles
+      for (const p of particles) {
+        ctx.globalAlpha = Math.max(0, p.alpha);
+        ctx.fillStyle = p.color;
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, 5, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      ctx.globalAlpha = 1;
+
+      // Player (when on foot)
+      if (!inCar) {
+        ctx.save();
+        ctx.translate(player.x, player.y);
+        ctx.rotate(aimAngle);
+        ctx.fillStyle = "#00eaff";
+        ctx.beginPath();
+        ctx.arc(0, 0, player.radius, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = "#ffffff";
+        ctx.fillRect(6, -3, 14, 6);
+        ctx.restore();
+      }
+
+      ctx.restore();
+    }
+
+    let lastTime = performance.now();
+    function loop(now) {
+      const dt = Math.min(0.05, (now - lastTime) / 1000);
+      lastTime = now;
+      if (gameStarted) update(dt);
+      draw();
+      requestAnimationFrame(loop);
+    }
+    requestAnimationFrame(loop);
+  </script>
+</body>
+</html>
